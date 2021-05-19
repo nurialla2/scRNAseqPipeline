@@ -1,0 +1,603 @@
+---
+title: "scRNAseqPipelineGSE147326"
+author: "Núria Lladós"
+date: "10/2/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Including libraries
+Firstly, Seurat library, and other necessary libraries, were installed and imported to use its functions.
+```{r message = FALSE}
+
+library(Seurat)
+library(dplyr)
+library(glmGamPoi)
+library(ReactomeGSA)
+library(scCATCH)
+library(ggplot2)
+library("goSTAG")
+library(biomaRt)
+library(splitstackshape) 
+
+#install.packages('Seurat')
+#install.packages('dplyr')
+#if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+#BiocManager::install("glmGamPoi")
+#BiocManager::install("goSTAG")
+#if (!require(ReactomeGSA)){
+#   BiocManager::install("ReactomeGSA")
+#   BiocManager::install("biomaRt")
+# }
+# install devtools and install scCATCH
+#install.packages(pkgs = 'devtools')
+#devtools::install_github('ZJUFanLab/scCATCH')
+
+#reticulate::py_install(packages = 'umap-learn')
+#install.packages("ggplot2")
+
+```
+
+# Import data and Create Seurat Object
+
+The creation of the function Import_alldata () enable to import the samples of interest, creates a Seurat object with the function CreateSeuratObject() for each sample and then merges all the samples from the same dataset. The type of samples was also added as a parameter. Seurat Object serves as a container that contains both data and analysis for a single-cell dataset (“Seurat - Guided Clustering Tutorial • Seurat,” 2020). 
+
+```{r}
+
+#Function to import data and create seurat object
+Import_sample <- function(data_raw, sampletype) {
+  cts=read.delim(data_raw,header=T, sep="\t", dec = ".", row.names = 1)
+ #if the file name is GSM4426066_Sample1.txt.gz it takes as data_name GSM4426066
+  data_name <- strsplit(data_raw, "_")[[1]]
+  #Filter features that are at least in one cell and cells that have at least one feature
+  #project name will be data_name_sampletype, p.e. GSM4426066_Control
+  pbmc <- CreateSeuratObject(counts = cts, project = paste(data_name[1],sampletype, sep="_"),
+                             min.cells = 1, min.features = 1)
+  
+  #add type of sample
+  pbmc$type = sampletype
+  #orig.ident is GSM4426066_control
+  pbmc$orig.ident= paste(data_name[1],sampletype, sep="_")   
+  
+  return(pbmc)
+}
+
+
+#Function to import and merge all the datasets 
+Import_alldata <- function(datafiles, treatment){
+  
+  alldata <- Import_sample(datafiles[1], treatment[1])
+  if (length(datafiles)>1)
+  {
+     for(i in 2:length(datafiles)) 
+      {
+      pbmc <- Import_sample(datafiles[i], treatment[i])
+      alldata <- merge(alldata, pbmc)
+     }
+  }
+
+  return(alldata)
+}
+
+```
+
+# Calculate Quality Control (QC)
+
+The function Calculate_QC() enable to calculate different extra metrics using PercentageFeatureSet() which calculate the proportion of transcripts mapping to specific type of genes, such as mitochondrial or ribosomal genes; e.g: Mitochondrial gene names start with MT-. (Björklund & Czarnewski, 2021). 
+
+```{r}
+
+Calculate_QC <- function(alldata) {
+#Calculate the proportion gene expression that comes from motochondria.
+alldata <- PercentageFeatureSet(object= alldata, pattern = "^MT-", col.name = "percent_mt")
+
+#Calculate the proportion gene expression that comes from ribosomal proteins
+alldata <- PercentageFeatureSet(alldata, "^RP[SL]", col.name = "percent_ribo")
+
+# Percentage hemoglobin genes - includes all genes starting with HB except HBP.
+#alldata <- PercentageFeatureSet(alldata, "^HB[^(P)]", col.name = "percent_hb")
+
+#alldata <- PercentageFeatureSet(alldata, "PECAM1|PF4", col.name = "percent_plat")
+
+return(alldata)
+}
+
+```
+
+
+# Plot QC 
+The function Plot_QC() visualize with VlnPlot the dispersion of data through the cells and with FeatureScatter() visualize the relationship of two parameters such as ncount-nfeature or ncount.percent.mt
+nFeature= number of features(genes) count per cell. 
+nCount= number of counts per cell. 
+
+```{r}
+
+Plot_QC <- function(data) {
+  
+  feats <- c("nFeature_RNA", "nCount_RNA", "percent_mt", "percent_ribo")
+  plot1 <- VlnPlot(data, group.by = "orig.ident", features = "nFeature_RNA")+ xlab("Samples") + ylab("Number of genes")
+    plot2 <- VlnPlot(data, group.by = "orig.ident", features = "nCount_RNA") + xlab("Samples") + ylab("Number of molecules")
+      plot3 <- VlnPlot(data, group.by = "orig.ident", features = "percent_mt") + xlab("Samples") + ylab("% mitochondrial genes")
+        plot4 <- VlnPlot(data, group.by = "orig.ident", features = "percent_ribo") + xlab("Samples") + ylab("% ribosomal genes")
+  
+  # Visualize QC metrics as a violin plot
+  plot5 <- FeatureScatter(data, feature1 = "nCount_RNA", feature2 = "percent_mt", group.by = "orig.ident")
+  plot6 <- FeatureScatter(data, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",  group.by = "orig.ident")
+   plot7 <- FeatureScatter(data, feature1="percent_mt", feature2="nFeature_RNA",  group.by = "orig.ident")
+  plot8 <- FeatureScatter(data, feature1="percent_ribo", feature2="nFeature_RNA",  group.by = "orig.ident")
+  
+   plots <- list(plot1,plot2,plot3,plot4,plot6,plot7,plot8)
+    # Save the plot
+   dir.create("output")
+  for (i in 1:8){
+    png(paste("output/plotQC",i,".png",sep=""))
+    print(plots[i])
+    dev.off()
+  }
+  
+  return(plots)
+}
+  
+```
+# Filtering data
+
+Filter cells based on QC metrics and visualized plots. The function Filter_data() was built and makes possible to filter cells with a minimum and maximum of genes detected or filter genes expressed in at least a minimum of cells, either a low or high number will imply low-quality cells or errors. It is also possible to filter cells with a minimum and maximum percentage of mitochondrial and ribosomal genes, as a high percentage means low-quality contamination. After Filtering, Plot_QC() can be rerun to visualize the compositional changes. 
+
+```{r}
+Filter_data <- function(alldata, min_Feature, max_Feature, min_cells, min_mito, max_mito, min_ribo, max_ribo) {
+  
+  #Filter cells with at least X detected genes and a maximum of Y genes detected
+  selected_c <- WhichCells(alldata, expression = (nFeature_RNA > min_Feature & nFeature_RNA < max_Feature))
+
+  #Genes needed to be expressed in at least X cells
+  selected_f <- rownames(alldata)[Matrix::rowSums(alldata) > min_cells]
+
+  data.filt <- subset(alldata, features = selected_f, cells = selected_c)
+  
+  #Filter cells with a minimum and maximum percentage of mitochondrial and ribosomal genes.
+  selected_mito <- WhichCells(data.filt, expression = ( percent_mt > min_mito & percent_mt < max_mito ) )
+
+  selected_ribo <- WhichCells(data.filt, expression = ( percent_ribo > min_ribo & percent_ribo < max_ribo ) )
+
+  # and subset the object to only keep those cells
+  data.filt <- subset(data.filt, cells = selected_mito)
+  data.filt <- subset(data.filt, cells = selected_ribo)
+  
+  return(data.filt)
+}  
+
+```
+
+
+#Normalization, Feature selection and Transformation
+##SCTransformation 
+The number of genes detected in each cell can vary between cells, therefore, data needs a pre-processing treatment that remove this technical variability. This include normalizing the feature expression measurements, calculate a subset of features that exhibit a high cell-to-cell variation in the dataset and scaling the data by a linear transformation. Hafemeister and Satija (2019) create the function SCTransform(), which was also used in this project, and replaces the use of NormalizeData(), FindVariableFeatures() and ScaleData(). This procedure omits the need for heuristic steps, including pseudocount addition or log-transformation, and improves following downstream analytical tasks (Hafemeister & Satija, 2019a). Feature Selection is the first step to reduce the dimensionality of scRNA-seq dataset. The aim is to calculate highly variable genes (HVGs) which are the principal responsible of the variability in the data. Seurat’s method group genes by their mean expression, and the genes with the highest variance-to-mean ratio are selected as HVGs in each bin (Luecken & Theis, 2019).
+```{r}
+SCTransformation <- function(data){
+  data <- SCTransform(data, method = "glmGamPoi", verbose = FALSE)
+  
+  return(data)
+}
+
+```
+
+#Perform linear dimensional reduction
+To perform PCA on the transformed data, RunPCA() function was used with the previously determined variable features as input. Afterwards, both cells and features that define the PCA were visualized using the created function PlotPCA() that contains the following methods: VizDimLoadings() function enable to visualize top genes associated with each reduction components, DimPlot() is a dimensional reduction plot where each point is a cell and it is positioned based on the cell embeddings determined by the reduction technique. Finally, DimHeatmap() enable to see if the PCs separate different populations of cells by ordering cells and features according to their PCA scores (“Seurat - Guided Clustering Tutorial • Seurat,” 2020).
+The strategy that Seurat proposes is to cluster cells bases on their PCA scores. Therefore, it is important to determine the ‘dimensionality’ of the dataset, the number of significant PCs that enable to describe the dataset. The proposed strategy uses the function ElbowPlot(), which based on a heuristic method represents the percentage of variance of each PC. The ‘elbow’ in the diagram will indicate the number of PCs that describe the dataset (“Seurat - Guided Clustering Tutorial • Seurat,” 2020). 
+
+```{r}
+#Run a PCA dimensionality reduction
+ PlotPCA <- function(pbmc){
+  
+  #Visualize Dimensional Reduction genes
+  # List positive and negative genes for each PC.
+
+  #plot1 <- print(pbmc[["pca"]], dims = 1:5, nfeatures = 5)
+  
+  #Visualize top genes associated with reduction components  
+  plot1 <- VizDimLoadings(pbmc, dims = 1:3, reduction = "pca")
+
+  #plot0 <- VizDimLoadings(pbmc)
+  #Dimensional reduction plot, each point is a cell and it's positioned based on the cell embeddings         determined by the reduction technique. 
+  plot2 <- DimPlot(pbmc, reduction = "pca", group.by = "orig.ident") + ggtitle("PCA")
+   plot7 <-  DimPlot(pbmc, reduction = "pca") + ggtitle("PCA")
+  #Cells and features are ordered according to their PCA scores. It enable to see if the PCs separate different populations of cells.
+  plot3<- DimHeatmap(pbmc, dims = 1:6, cells=200, nfeatures=15, balanced=TRUE) 
+  plot4 <- DimHeatmap(pbmc, dims = 7:12, cells=200, nfeatures=15, balanced = TRUE)
+  plot5 <- DimHeatmap(pbmc, dims = 13:18, cells=200, nfeatures=15, balanced = TRUE)
+  #Determine the 'dimensionality' of the dataset
+  plot6 <- ElbowPlot(pbmc)
+  
+  plots <- list(plot1,plot2,plot3,plot4,plot5, plot6, plot7)
+    # Save the plot
+   dir.create("output")
+  for (i in 1:7){
+    png(paste("output/plotPCA",i,".png",sep=""))
+    print(plots[i])
+    dev.off()
+  }
+  
+  return(plots)
+}
+
+
+```
+
+
+#Cluster the cells
+
+The function FindNeighbors() constructs a KNN graph based on the Euclidean distance in PCA space, and  refine the edge weights between any two cells calculation the neighborhood overlap and its k-nearest neighbors (Hoffman, n.d.). The input of this function will be the previously defined PC cut-off. 
+FindClusters() function optimize the modularity function to group cells together and define clusters. The ‘granularity’ of the downstream clustering can be set by adjusting the resolution parameter.  By default, the modularity technique is Louvain algorithm (Luecken & Theis, 2019). 
+RunUMAP() and RUNTSNE() perform non-linear dimensional reduction method, UMAp and TSNE respectively using as input parameter the previously characterised Elbow PC.
+
+The function ClusterCells() has been built to join the steps cluster cells and run UMAP and TSNE.
+
+
+```{r}
+ClusterCells <- function(pbmc, PCAdim, clusterResol){
+  pbmc <- FindNeighbors(pbmc, dims = 1:PCAdim)
+  pbmc <- FindClusters(pbmc, resolution = clusterResol)
+ #Run non-linear dimensional reduction (UMAP)
+  pbmc <- RunUMAP(pbmc, dims = 1:PCAdim)
+  pbmc <- RunTSNE(pbmc, rand_seed = 1, dims = 1:PCAdim)
+  
+  return (pbmc) 
+}
+
+```
+
+
+#Represent a  non-linear dimensional reduction plot (UMAP, t-SNE)
+The function Plotnonlinear() visualize the UMAP and TSNE calculated above using a DimPlot, PCA has been re-visualised by colouring the clusters.
+```{r}
+Plotnonlinear <- function(pbmc){
+ 
+  plot1 <- DimPlot(data.filt, reduction = "umap") + ggtitle("A") + ggplot2::theme( legend.position = "bottom", legend.text = element_text( size = 9))
+ plot2 <- DimPlot(data.filt, reduction = "umap", group.by = "orig.ident") + ggtitle("B") + ggplot2::theme( legend.position = "bottom", legend.text = element_text( size = 8))
+ 
+  plot3 <- DimPlot(pbmc, reduction = "tsne") + ggtitle("A") + ggplot2::theme( legend.position = "bottom", legend.text = element_text( size = 9))
+  plot4 <-  DimPlot(pbmc, reduction = "tsne", group.by = "orig.ident") + ggtitle("B")   + ggplot2::theme( legend.position = "bottom", legend.text = element_text( size = 8))
+  plot5 <- DimPlot(pbmc, reduction = "pca") + ggtitle("A") + ggplot2::theme( legend.position = "bottom", legend.text = element_text( size = 9))
+  plot6 <-  DimPlot(pbmc, reduction = "pca", group.by = "orig.ident") + ggtitle("B")   + ggplot2::theme( legend.position = "bottom", legend.text = element_text( size = 8))
+  plot7  <- DimPlot(pbmc, 
+        label = TRUE, 
+        split.by = "type")
+  
+    plots <- list(plot1,plot2,plot3,plot4, plot5, plot6, plot7)
+    # Save the plot
+   dir.create("output")
+  for (i in 1:7){
+    png(paste("output/plotnonlinear",i,".png",sep=""))
+    print(plots[i])
+    dev.off()
+  }
+  
+  return(plots)
+}
+
+```
+
+
+
+#Finding differentially expressed features (cluster biomarkers)
+
+The following step is identifying differentially expressed genes in each cluster that may work as biomarkers. The function FindAllMarkers() aims to find markers for every previously identified cluster compared to all other cells. A function named FindBioMarkers() was built, it uses the previously mentioned function and return a table with the N markers from each cluster with higher fold change, together with its p-value and percentage of cells where the feature is represented. It has as input parameter the topN markers to be obtain from each cluster and, the type of test to be used to calculate the markers.
+The function PlotMarkers() was built to visualize markers expression through different methods. Different lists of genes must be predefined before executing the function. The level expression of the genes from featureVln list is visualized for each cluster in a Violin Plot. The cells where the genes from the list featureFeaturePlot are differentially expressed are coloured in a Feature plot. A Heatmap represents the expression of the N major DEGs for each cluster versus all cells. Finally, the genes listed in featureDot are used in a DotPlot, which represents the average expression and the percentage expressed of each gene for each cluster (“Seurat - Guided Clustering Tutorial • Seurat,” 2020).
+
+```{r}
+#Calculate the top biomarkers for each cluster.
+FindBioMarkers <- function(data, topN, test, ident1, ident2) {
+
+  if (is.null(ident1) & is.null(ident2))  {
+    # find markers for every cluster compared to all remaining cells, report only the positive ones
+markers <- FindAllMarkers(data, min.pct = 0.25, logfc.threshold = 0.25,  test.use = test, min.diff.pct = 0.25)
+
+markers$abslog2FC =  abs(markers$avg_log2FC)
+
+
+#ADD DESCRIPTION 
+ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl")
+filters = listFilters(ensembl)
+attributes = listAttributes(ensembl)
+desc <- getBM(attributes=c("description", "hgnc_symbol"),   
+      mart = ensembl)
+markers <- left_join(markers, 
+                         desc, 
+                         by = c("gene" = "hgnc_symbol"))
+
+return(filter(markers, p_val_adj < 0.05) %>% group_by(cluster) %>% top_n(n = topN, wt = abslog2FC))
+  }
+
+else {
+  # find all markers distinguishing cluster 5 from clusters 0 and 3
+cluster.markers <- FindMarkers(data, ident.1 = ident1, ident.2 = ident2, min.pct = 0.25, test.use = test, only.pos = FALSE)
+
+cluster.markers$abslog2FC =  abs(cluster.markers$avg_log2FC)
+cluster.markers$gene = rownames(cluster.markers)
+cluster.markers$cluster = ident1 
+
+#ADD DESCRIPTION 
+ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl")
+filters = listFilters(ensembl)
+attributes = listAttributes(ensembl)
+desc <- getBM(attributes=c("description", "hgnc_symbol"),   
+      mart = ensembl)
+cluster.markers <- left_join(cluster.markers, 
+                         desc, 
+                         by = c("gene" = "hgnc_symbol"))
+
+return(filter(cluster.markers, p_val_adj < 0.05) %>% top_n(n = topN, wt = abslog2FC))
+
+}
+
+}
+
+ 
+#Visualize selected genes through cluster cells. 
+PlotMarkers <-function (data, markers, featureVln, featureFeaturePlot, topN, featureDot) {
+  
+ plot1 <-  VlnPlot(data, features = featureVln)
+ plot2 <-  FeaturePlot(data, features = featureFeaturePlot) 
+# plot3 <- FeaturePlot(data, features = featureFeaturePlot, split.by = "type")
+   #DoHeatmap() generates an expression heatmap for given cells and features. In this case, we are plotting the top N markers (or all markers if less than N) for each cluster and with p-values below 0.05-
+ top10 <- filter(markers, p_val_adj < 0.05) %>% group_by(cluster) %>% top_n(n = topN, wt = abslog2FC)
+ plot3 <- DoHeatmap(data, features = top10$gene)
+ plot4 <- DotPlot(object = data, features = featureDot)
+ 
+   plots <- list(plot1,plot2,plot3,plot4)
+    # Save the plot
+   dir.create("output")
+  for (i in 1:4){
+    png(paste("output/plotMarkers",i,".png",sep=""))
+    print(plots[i])
+    dev.off()
+  }
+ return(plots)
+ 
+}
+
+```
+
+
+#Pathway analysis of cell clusters
+
+```{r}
+Obtain_pathway <- function (data){
+  #Obtain the pathway-level expression values per cell cluster
+  pathway_expression <- pathways(data)
+  
+  colnames(pathway_expression) <- gsub("\\.Seurat", "", colnames(pathway_expression))
+  
+  
+     # find the maximum differently expressed pathway
+    max_difference <- do.call(rbind, apply(pathway_expression, 1, function(row) {
+        values <- as.numeric(row[2:length(row)])
+        return(data.frame(name = row[1], min = min(values), max = max(values)))
+    }))
+    
+    max_difference$diff <- max_difference$max - max_difference$min
+    
+    # sort based on the difference
+    max_difference <- max_difference[order(max_difference$diff, decreasing = T), ]
+  
+  return(max_difference)
+}
+
+Plot_Pathway <- function (data, max_diff, num_path) {
+  
+  
+  plot1 <- plot_gsva_pathway(data, pathway_id = rownames(max_diff)[1]) + plot_gsva_pathway(data, pathway_id = rownames(max_diff)[2]) + plot_gsva_pathway(data, pathway_id = rownames(max_diff)[3]) + plot_gsva_pathway(data, pathway_id = rownames(max_diff)[4]) + plot_gsva_pathway(data, pathway_id = rownames(max_diff)[5])+ plot_gsva_pathway(data, pathway_id = rownames(max_diff)[6]) + plot_gsva_pathway(data, pathway_id = rownames(max_diff)[7]) + plot_gsva_pathway(data, pathway_id = rownames(max_diff)[8]) + plot_gsva_pathway(data, pathway_id = rownames(max_diff)[9]) + plot_gsva_pathway(data, pathway_id = rownames(max_diff)[10]) + plot_gsva_pathway(data, pathway_id = rownames(max_diff)[11]) + plot_gsva_pathway(data, pathway_id = rownames(max_diff)[12])
+  
+  plot2 <- plot_gsva_pca(data)
+ 
+ # plot3 <-  plot_gsva_heatmap(data, max_pathways = num_path, margins = c(3,15))
+  
+  
+  plots <- list(plot1,plot2)
+      # Save the plot
+   dir.create("output")
+  for (i in 1:2){
+    png(paste("output/plotpathway",i,".png",sep=""))
+    print(plots[i])
+    dev.off()
+  }
+  
+  return(plots)
+}
+```
+
+
+#GO enrichment
+```{r}
+
+GOEnrichment <- function (markers, sign){
+  
+  df1_new<- markers %>% group_by(cluster) %>% summarise(gene= toString(gene))
+  df1_new$desc <- NA
+  df1_new <- df1_new %>% relocate(desc, .after = cluster)
+  df1_new <- cSplit(df1_new, 'gene', ', ')
+  write.table(df1_new, "genesbycluster.gmt", sep="\t", row.names = FALSE, col.names = FALSE, quote=FALSE)
+  
+  gene_lists <- loadGeneLists( "genesbycluster.gmt" )
+  go_terms <- loadGOTerms( species = "human")
+  enrichment_matrix <- performGOEnrichment( gene_lists, go_terms, filter_method = "p.adjust", significance_threshold = sign, p.adjust_method = "BH" )
+  return(enrichment_matrix)
+}
+  
+
+
+```
+
+#Cell type cluster identification
+```{r}
+
+CellTypeIdentification <- function (data.filt){
+  
+clu_markers <- findmarkergenes(object = data.filt,
+                               species = 'Human',
+                               cluster = 'All',
+                               match_CellMatch = FALSE,
+                               cancer = NULL,
+                               tissue ='Breast-related',
+                               cell_min_pct = 0.25,
+                               logfc = 0.25,
+                               pvalue = 0.05)
+# Write results to file
+write.csv(clu_markers$clu_markers, "output/clusterMarker.csv", quote = F)
+# Step 2: evidence-based scoring and annotaion for identified potential marker genes of each cluster generated from findmarkergenes function.
+
+clu_ann <- scCATCH(object = clu_markers$clu_markers,
+                   species = 'Human',
+                   cancer = NULL,
+                   tissue = 'Breast')
+# Write results to file
+write.csv(clu_ann, "output/clusterAnnotation.csv", quote = F)
+
+return(clu_ann)
+}
+
+```
+
+
+
+```{r}
+#PIPELINE
+
+#Set your environment, set working directory and decompress the dataset. 
+setwd("D:/uni/5e/Thesis/Data/")
+untar('GSE147326_RAW.tar')
+#In the console: "pip install umap-learn" to use RunUMAP
+
+#Introduce the data samples files names and the type of treatment of each sample in the same order.
+datafiles <- c("GSM4426066_Sample1.txt.gz","GSM4426067_Sample2.txt.gz","GSM4426073_Sample8.txt.gz","GSM4426074_Sample9.txt.gz")
+treatment <- factor(c("control", "Doxorubicin", "control", "Doxorubicin"))
+
+#Import datasets 
+alldata <- Import_alldata(datafiles,treatment)
+alldata
+table(alldata$orig.ident)
+head(alldata[["RNA"]]@counts,10)
+
+#Calculate QC 
+alldata <- Calculate_QC(alldata)
+#Plot QC
+Plot_QC(alldata)
+alldata
+#Filter cells with at least X detected genes and a maximum of Y genes detected
+ #Genes needed to be expressed in at least X cells
+#Filter data based in the plots
+#Introduce the boundary parameters in the following order:
+#min_Feature and max_Feature:filter cells with a minimum and maximum of genes detected.
+#min_cells: Filter genes expressed in at least a minimum of cells.
+#min_mito, max_mito, min_ribo, max_ribo: 
+#Parameters: min_Feature, max_Feature, min_cells, min_mito, max_mito, min_ribo, max_ribo
+data.filt <- Filter_data(alldata, 20, 7000, 20, 0, 40, 0.05, 50)
+#Plot again to see the filtered data
+Plot_QC(data.filt)
+table(data.filt$orig.ident)
+data.filt
+#Identification of highly variable features
+#Parameters (data.filt, n_features), n_features is the number of features selected with higher variation.
+#data.filt.norm <- FeatureSelection(data.filt, 2000)
+#Plot variable features 
+#Parameters (data.filt, topgenes). topgenes: number of highly variable genes plot
+#Plot_VariableFeatures(data.filt.norm, 10)
+
+#Scaling the data
+#data.filt.norm <- Transformation(data.filt.norm)
+
+#Include the steps NormalizeData, FindVaraibleFeatures and Transformation
+data.filt <- SCTransformation(data.filt)
+data.filt
+table(data.filt$orig.ident)
+
+#Run a PCA dimensionality reduction.
+#The previously determined  variable features are used as input
+data.filt <- RunPCA(data.filt)
+#Visualize cells and features that define the PCA
+#Determine the 'dimensionality' of the dataset
+PlotPCA(data.filt)
+data.filt
+
+#FindNeighbors function, and takes as input the previously defined dimensionality of the dataset (first 12 PCs).
+#The FindClusters function implements this procedure, and contains a resolution parameter that sets the ‘granularity’ of the downstream clustering, with increased values leading to a greater number of clusters.
+data.filt <- ClusterCells(data.filt, 12 , 0.8)
+# Look at cluster IDs of the first 5 cells
+head(Idents(data.filt), 5)
+#head(data.filt$orig.ident, 5)
+#Visualize UMAP plot
+Plotnonlinear(data.filt)
+
+
+#Parameters: data, number of top genes per cluster, type of test: wilcox, ROC....
+#Top 50 DEGs per cell cluster comparing each cluster against the rest
+data.filt.markers<- FindBioMarkers(data.filt, 100, "wilcox", NULL, NULL)
+write.csv(data.filt.markers, "output/top100markers.csv", quote = F)
+#Top 50 DEGs of cell cluster 5 compared with cell cluster 3 
+topmarkers53<- FindBioMarkers(data.filt, 50, "wilcox", 5,  3)
+write.csv(topmarkers53, "output/cluster5vs3markers.csv", quote = F)
+
+#Define genes to include in the plots 
+featureVln = featureFeaturePlot = featureDot= c( "TOP2A") 
+featureVln = featureFeaturePlot = featureDot= c( "", "MGP", "PTTG1", "PRSS23", "KRT81", "GSTP1", "PD2K1","TPX2") 
+#Plot marker genes in four different representations. 
+#parameters: list of genes for the VlnPlot, FeaturePlot, number of top expressed genes for the Heatmap, and list of genes for the DotPlot.
+
+PlotMarkers(data.filt, data.filt.markers, featureVln, featureFeaturePlot, 15, featureDot) 
+PlotMarkers(data.filt, topmarkers53, featureVln, featureFeaturePlot, 20, featureDot)
+
+saveRDS(data.filt, file = "D:/uni/5e/Thesis/Data/analysis.rds")
+
+#Pathway analysis of cell clusters
+gsva_result <- analyse_sc_clusters(data.filt, include_disease_pathways = FALSE,
+  create_reactome_visualization = TRUE,
+  create_reports = TRUE,
+  report_email = "a20nurll@student.his.se")
+gsva_result
+max_difference <- Obtain_pathway(gsva_result)
+write.csv(max_difference, "output/max_differenced_pathway.csv", quote = F)
+head(max_difference)
+
+#Parameter: Max differenced pathways
+Plot_Pathway(gsva_result, max_difference, 15)  
+  plot_gsva_heatmap(gsva_result, max_pathways = 15, margins = c(4,17))
+  
+#GO enrichment
+#Parameters: sigificance_threshold to filter the enriched GOterms.
+enrichment_matrix <- GOEnrichment(data.filt.markers, 0.05)
+write.csv(enrichment_matrix, "output/enrichment_matrix.csv", quote = F)
+
+  #Before clustering the GO terms into groups, you must first perform hierarchical clustering.
+#Parameters:
+#distance_method: method to measure distance  between GO terms clusters. p.e; correlation, euclidean...
+#clustering_method: agglomeration method to perform the hierarchical clustering. p.e; average, complete....
+  hclust_results <- performHierarchicalClustering( enrichment_matrix, distance_method="correlation", clustering_method = "average")
+  hclust_results
+  #Group the GO terms into clusters using the groupClusters function
+  #Paraneters: 
+  #Distance_threshold: threshold to group the Goterms into clusters. Lower value produces more clusters, but fewer GO terms and, higher threshold produces fewever clusters, but with more GO terms on average. (0.5-0.05)
+  clusters <- groupClusters( hclust_results, distance_threshold = 0.05)
+  clusters
+ #write.csv(clusters, "D:/uni/5e/Thesis/Data/output/clusters.csv", quote = F)
+
+#Annotate each of the clusters using the GO term within each cluster’s subtree that has the most paths back to the root.
+cluster_labels <- annotateClusters( clusters )
+
+head( cluster_labels )
+write.csv(cluster_labels, "output/clusterlabels.csv", quote = F)
+
+plotHeatmap( enrichment_matrix, hclust_results, clusters, cluster_labels, header_lwd = 2, cluster_label_cex = 0.7, sample_label_cex = 1.5,  min_num_terms = 1) 
+
+
+
+``` 
+
+
+```{r}
+rm(list=ls())
+```
+
