@@ -1,6 +1,7 @@
 ---
 title: "scRNAseqPipelineGSE147326"
 author: "Núria Lladós"
+mail: "a20nurll@student.his.se"
 date: "10/2/2021"
 output: html_document
 ---
@@ -556,7 +557,7 @@ saveRDS(data.filt, file = "D:/uni/5e/Thesis/Data/analysis.rds")
 gsva_result <- analyse_sc_clusters(data.filt, include_disease_pathways = FALSE,
   create_reactome_visualization = TRUE,
   create_reports = TRUE,
-  report_email = "a20nurll@student.his.se")
+  report_email = "")
 gsva_result
 max_difference <- Obtain_pathway(gsva_result)
 write.csv(max_difference, "output/max_differenced_pathway.csv", quote = F)
@@ -597,7 +598,4 @@ plotHeatmap( enrichment_matrix, hclust_results, clusters, cluster_labels, header
 ``` 
 
 
-```{r}
-rm(list=ls())
-```
 
