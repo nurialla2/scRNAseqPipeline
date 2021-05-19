@@ -14,17 +14,7 @@ knitr::opts_chunk$set(echo = TRUE)
 # Including libraries
 Firstly, Seurat library, and other necessary libraries, were installed and imported to use its functions.
 ```{r message = FALSE}
-
-library(Seurat)
-library(dplyr)
-library(glmGamPoi)
-library(ReactomeGSA)
-library(scCATCH)
-library(ggplot2)
-library("goSTAG")
-library(biomaRt)
-library(splitstackshape) 
-
+#PACKAGES TO INSTALL
 #install.packages('Seurat')
 #install.packages('dplyr')
 #if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
@@ -40,6 +30,17 @@ library(splitstackshape)
 
 #reticulate::py_install(packages = 'umap-learn')
 #install.packages("ggplot2")
+
+
+library(Seurat)
+library(dplyr)
+library(glmGamPoi)
+library(ReactomeGSA)
+library(scCATCH)
+library(ggplot2)
+library("goSTAG")
+library(biomaRt)
+library(splitstackshape) 
 
 ```
 
